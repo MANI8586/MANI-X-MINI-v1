@@ -20,7 +20,7 @@ module.exports = {
   DEFAULT_PREFIX: '.',
   SESSIONS_DIR: './sessions',
   PREMIUM_DB: './database/premium.json',
-  MENU_IMAGE: 'https://i.imgur.com/yourimage.jpg',
+  MENU_IMAGE: 'https://files.catbox.moe/y67z0s.jpg',
   REPORT_CHAT: 8240679965,
   OWNER_HANDLE: 't.me/mani85861',
   CHANNEL_LINK: 'https://t.me/SUNKYYYY101',
