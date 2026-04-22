@@ -14,15 +14,15 @@
 */
 
 module.exports = {
-  TELEGRAM_TOKEN: 'YOUR_TELEGRAM_BOT_TOKEN',
-  OWNER_ID: 123456789,
-  BOT_NAME: 'Anime MD',
+  TELEGRAM_TOKEN: '8709493913:AAFFddYCc1bUdP-oWlRjqmH4342DGPYpp4I',
+  OWNER_ID: 8240679965,
+  BOT_NAME: 'MANI X MINI',
   DEFAULT_PREFIX: '.',
   SESSIONS_DIR: './sessions',
   PREMIUM_DB: './database/premium.json',
   MENU_IMAGE: 'https://i.imgur.com/yourimage.jpg',
-  REPORT_CHAT: 123456789,
-  OWNER_HANDLE: 't.me/shenxidev',
-  CHANNEL_LINK: 'https://t.me/yourchannel',
-  GROUP_LINK: 'https://t.me/yourgroup',
+  REPORT_CHAT: 8240679965,
+  OWNER_HANDLE: 't.me/mani85861',
+  CHANNEL_LINK: 'https://t.me/SUNKYYYY101',
+  GROUP_LINK: 'https://t.me/MANI_X_SUPPORT',
 };
