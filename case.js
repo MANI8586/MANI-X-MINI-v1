@@ -86,10 +86,10 @@ function resolveTarget(m, args) {
 }
 
 // ─── Font-aware reply ─────────────────────────────────────────────────────────
-async function fReply(conn, m, text, sessionName) {
+async function fReply(conn, m, text, sessionName, mentions = []) {
   const fontNum = getSessionSetting(sessionName, 'font', 1);
   const out = (fontNum && fontNum > 1) ? applyFont(text, fontNum) : text;
-  await conn.sendMessage(m.key.remoteJid, { text: out }, { quoted: m });
+  await conn.sendMessage(m.key.remoteJid, { text: out, mentions }, { quoted: m });
 }
 
 async function plainReply(conn, m, text) {
@@ -103,27 +103,67 @@ function containsLink(text) { return LINK_REGEX.test(text || ''); }
 // ─── Banned users store ───────────────────────────────────────────────────────
 const bannedUsers = new Set();
 
+// ─── Bad Words List (Anti-Toxic) ──────────────────────────────────────────────
+const BAD_WORDS = [
+  'fuck', 'shit', 'asshole', 'bitch', 'bastard', 'dick', 'pussy', 'cunt',
+  'madarchod', 'bhenchod', 'harami', 'kutta', 'suar', 'gali', 'gaali',
+  // Add more as needed
+];
+
 // ──────────────────────────────────────────────────────────────────────────────
-// 🔥 COMMAND LOADER (AUTO-LOAD FROM /commands FOLDER)
+// 🔥 NAYA COMMAND LOADER (Aliases + Description Support)
 // ──────────────────────────────────────────────────────────────────────────────
 const COMMANDS = {};
+const ALIASES_MAP = new Map();
+const COMMANDS_INFO = new Map();
+
 const commandsPath = path.join(__dirname, 'commands');
 
-// Commands folder agar nahi hai to create karein
 if (!fs.existsSync(commandsPath)) {
   fs.mkdirSync(commandsPath, { recursive: true });
 }
 
-// Sab .js files ko commands folder se load karein
 const commandFiles = fs.readdirSync(commandsPath).filter(file => file.endsWith('.js'));
 
 for (const file of commandFiles) {
   try {
-    const commandName = file.replace('.js', '').toLowerCase();
     const commandModule = require(path.join(commandsPath, file));
-    if (typeof commandModule === 'function') {
+    
+    // Naye format ke liye
+    if (commandModule.name && commandModule.run) {
+      const cmdName = commandModule.name.toLowerCase();
+      COMMANDS[cmdName] = commandModule.run;
+      COMMANDS_INFO.set(cmdName, {
+        description: commandModule.description || 'No description',
+        category: commandModule.category || 'General',
+        isOwner: commandModule.isOwner || false,
+        isAdmin: commandModule.isAdmin || false,
+        isPremium: commandModule.isPremium || false,
+        aliases: commandModule.aliases || []
+      });
+      
+      // Aliases register karein
+      if (commandModule.aliases) {
+        for (const alias of commandModule.aliases) {
+          ALIASES_MAP.set(alias.toLowerCase(), cmdName);
+        }
+      }
+      
+      process.stdout.write(`[CMD] Loaded: ${cmdName}\n`);
+    }
+    // Purane format ke liye (backward compatibility)
+    else if (typeof commandModule === 'function') {
+      const commandName = file.replace('.js', '').toLowerCase();
       COMMANDS[commandName] = commandModule;
-      process.stdout.write(`[CMD] Loaded: ${commandName}\n`);
+      COMMANDS_INFO.set(commandName, {
+        description: 'No description',
+        category: 'General',
+        isOwner: false,
+        isAdmin: false,
+        isPremium: false,
+        aliases: []
+      });
+      process.stdout.write(`[CMD] Loaded (old): ${commandName}\n`);
     }
   } catch (err) {
     process.stdout.write(`[CMD ERROR] ${file}: ${err.message}\n`);
@@ -132,7 +172,11 @@ for (const file of commandFiles) {
 
 // Agar commands folder khali hai to basic menu load karein
 if (Object.keys(COMMANDS).length === 0) {
-  COMMANDS['menu'] = require('./commands/menu.js');
+  try {
+    COMMANDS['menu'] = require('./commands/menu.js');
+  } catch (e) {
+    process.stdout.write(`[MENU ERROR] ${e.message}\n`);
+  }
 }
 
 // ─── Status handler ───────────────────────────────────────────────────────────
@@ -142,6 +186,124 @@ async function handleStatus(conn, m, sessionName) {
   if (autoView || autoLike) await conn.readMessages([m.key]);
   if (autoLike) {
     try { await conn.sendMessage(m.key.remoteJid, { react: { text: '❤️', key: m.key } }); } catch {}
+  }
+}
+
+// ─── Anti-Toxic Handler ───────────────────────────────────────────────────────
+async function handleAntiToxic(conn, m, sessionName, senderJid) {
+  const mode = getSessionSetting(sessionName, 'antitoxic', 'off');
+  if (mode === 'off') return false;
+  
+  const text = getMsgText(m).toLowerCase();
+  const hasBadWord = BAD_WORDS.some(word => text.includes(word));
+  if (!hasBadWord) return false;
+  
+  const remoteJid = m.key.remoteJid;
+  const senderNumber = normalizeNumber(senderJid);
+  
+  // Admin ko skip karein
+  if (await isGroupAdmin(conn, remoteJid, senderJid)) return false;
+  
+  if (mode === 'del') {
+    await conn.sendMessage(remoteJid, { delete: m.key });
+  } else if (mode === 'warn') {
+    await conn.sendMessage(remoteJid, { delete: m.key });
+    await conn.sendMessage(remoteJid, {
+      text: `⚠️ @${senderNumber} bad words are not allowed!`,
+      mentions: [senderJid]
+    });
+    
+    // Warning system call
+    await addWarning(remoteJid, senderJid, 'Bad language');
+  } else if (mode === 'kick') {
+    await conn.sendMessage(remoteJid, { delete: m.key });
+    await conn.groupParticipantsUpdate(remoteJid, [senderJid], 'remove');
+  }
+  
+  return true;
+}
+
+// ─── Warning System Functions ─────────────────────────────────────────────────
+const warningsPath = path.join(__dirname, 'database/warnings.json');
+if (!fs.existsSync(warningsPath)) fs.writeFileSync(warningsPath, '{}');
+
+function getWarnings() {
+  try {
+    return JSON.parse(fs.readFileSync(warningsPath, 'utf8'));
+  } catch {
+    return {};
+  }
+}
+
+function saveWarnings(data) {
+  fs.writeFileSync(warningsPath, JSON.stringify(data, null, 2));
+}
+
+async function addWarning(groupId, userJid, reason) {
+  const warnings = getWarnings();
+  if (!warnings[groupId]) warnings[groupId] = {};
+  if (!warnings[groupId][userJid]) warnings[groupId][userJid] = { count: 0, reasons: [] };
+  
+  warnings[groupId][userJid].count++;
+  warnings[groupId][userJid].reasons.push({ reason, date: new Date().toISOString() });
+  saveWarnings(warnings);
+  
+  return warnings[groupId][userJid].count;
+}
+
+// ─── Welcome/Goodbye Handler ──────────────────────────────────────────────────
+async function handleWelcomeGoodbye(conn, groupJid, userJid, action, sessionName) {
+  if (action === 'add') {
+    const welcomeMsg = getSessionSetting(sessionName, `welcome_${groupJid}`, null);
+    if (!welcomeMsg) return;
+    
+    const groupMeta = await conn.groupMetadata(groupJid);
+    const groupName = groupMeta.subject;
+    const memberCount = groupMeta.participants.length;
+    const userName = `@${userJid.split('@')[0]}`;
+    
+    let msg = welcomeMsg
+      .replace(/{name}/g, userName)
+      .replace(/{group}/g, groupName)
+      .replace(/{count}/g, memberCount)
+      .replace(/@user/g, userName);
+    
+    await conn.sendMessage(groupJid, { text: msg, mentions: [userJid] });
+  } else if (action === 'remove') {
+    const goodbyeMsg = getSessionSetting(sessionName, `goodbye_${groupJid}`, null);
+    if (!goodbyeMsg) return;
+    
+    const groupMeta = await conn.groupMetadata(groupJid);
+    const groupName = groupMeta.subject;
+    const userName = `@${userJid.split('@')[0]}`;
+    
+    let msg = goodbyeMsg
+      .replace(/{name}/g, userName)
+      .replace(/{group}/g, groupName)
+      .replace(/@user/g, userName);
+    
+    await conn.sendMessage(groupJid, { text: msg, mentions: [userJid] });
+  }
+}
+
+// ─── Anti-Bot Handler ─────────────────────────────────────────────────────────
+async function handleAntiBot(conn, groupJid, userJid, sessionName) {
+  const enabled = getSessionSetting(sessionName, 'antibot', false);
+  if (!enabled) return;
+  
+  // Check if user is bot (simple check - you can expand)
+  const botPatterns = ['bot', 'assistant', 'ai', 'auto'];
+  const userNumber = normalizeNumber(userJid);
+  
+  // Agar user ka number bot pattern match kare to kick
+  // Yeh aap customize kar sakte hain
+  const isSuspicious = botPatterns.some(p => userNumber.includes(p));
+  
+  if (isSuspicious) {
+    try {
+      await conn.groupParticipantsUpdate(groupJid, [userJid], 'remove');
+      process.stdout.write(`[ANTIBOT] Kicked ${userJid} from ${groupJid}\n`);
+    } catch (e) {}
   }
 }
 
@@ -218,6 +380,34 @@ async function handleAntilink(conn, m, sessionName, senderJid, botNumber) {
   }
 }
 
+// ─── Auto-Sticker Handler ─────────────────────────────────────────────────────
+async function handleAutoSticker(conn, m, sessionName) {
+  const enabled = getSessionSetting(sessionName, 'autosticker', false);
+  if (!enabled) return false;
+  
+  const imageMsg = m.message?.imageMessage;
+  if (!imageMsg) return false;
+  
+  try {
+    const buf = await downloadMedia(imageMsg, 'image');
+    await conn.sendMessage(m.key.remoteJid, { sticker: buf }, { quoted: m });
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+// ─── Auto-Reply Handler ───────────────────────────────────────────────────────
+async function handleAutoReply(conn, m, sessionName, body) {
+  const autoReplies = getSessionSetting(sessionName, 'autoreply', {});
+  const reply = autoReplies[body.toLowerCase()];
+  if (reply) {
+    await fReply(conn, m, reply, sessionName);
+    return true;
+  }
+  return false;
+}
+
 // ─── Main dispatcher ──────────────────────────────────────────────────────────
 async function handleMessage(conn, m, sessionName, ownerNumber) {
   try {
@@ -242,84 +432,85 @@ async function handleMessage(conn, m, sessionName, ownerNumber) {
 
     if (bannedUsers.has(senderNumber)) return;
 
-    if (remoteJid.endsWith('@g.us')) {
-      await handleAntilink(conn, m, sessionName, senderJid, botNumber);
-    }
-
     const userSettings = loadUserSettings(sessionName);
     const prefix = userSettings.prefix || settings.DEFAULT_PREFIX;
     const mode = userSettings.mode || 'public';
 
     const msgContent = getMsgText(m);
-    if (!msgContent.startsWith(prefix)) return;
+    const body = msgContent.startsWith(prefix) ? msgContent.slice(prefix.length).trim() : msgContent;
 
-    const body = msgContent.slice(prefix.length).trim();
+    // ─── Group Protection Features ───────────────────────────────────────────
+    if (remoteJid.endsWith('@g.us')) {
+      await handleAntilink(conn, m, sessionName, senderJid, botNumber);
+      const toxic = await handleAntiToxic(conn, m, sessionName, senderJid);
+      if (toxic) return; // Stop if message was toxic and deleted
+    }
+
+    // ─── Auto-Sticker Check ──────────────────────────────────────────────────
+    const autoStickerDone = await handleAutoSticker(conn, m, sessionName);
+    if (autoStickerDone) return;
+
+    // ─── Check if it's a command ─────────────────────────────────────────────
+    if (!msgContent.startsWith(prefix)) {
+      // Not a command - check auto-reply
+      await handleAutoReply(conn, m, sessionName, body);
+      return;
+    }
+
     const [commandRaw, ...args] = body.split(' ');
     let command = commandRaw.toLowerCase();
 
-    // ──────────────────────────────────────────────────────────────────────────
-    // 🔥 ALIASES SYSTEM
-    // ──────────────────────────────────────────────────────────────────────────
-    const ALIASES = {
-      // Settings Commands
-      'setprefix': ['sp', 'changeprefix', 'prefix'],
-      'setowner': ['so', 'changeowner'],
-      'setbotname': ['sbn', 'changebotname', 'botname'],
-      'setmenuimg': ['smi', 'menuimage', 'changemenuimg'],
-      'setfonts': ['sf', 'changefont', 'fontstyle'],
-      'fonts': ['fontlist', 'listfonts', 'fl'],
+    // ─── Alias Check ─────────────────────────────────────────────────────────
+    if (ALIASES_MAP.has(command)) {
+      command = ALIASES_MAP.get(command);
+    } else {
+      // Fallback to old ALIASES object
+      const ALIASES = {
+        'setprefix': ['sp', 'changeprefix', 'prefix'],
+        'setowner': ['so', 'changeowner'],
+        'setbotname': ['sbn', 'changebotname', 'botname'],
+        'setmenuimg': ['smi', 'menuimage', 'changemenuimg'],
+        'setfonts': ['sf', 'changefont', 'fontstyle'],
+        'fonts': ['fontlist', 'listfonts', 'fl'],
+        'public': ['pub', 'publicmode'],
+        'self': ['selfmode'],
+        'addprem': ['ap', 'addpremium', 'premadd'],
+        'delprem': ['dp', 'delpremium', 'premdel'],
+        'ban': ['block','chup', 'banuser'],
+        'unban': ['unblock', 'unbanuser'],
+        'promote': ['p','prom', 'admin', 'makeadmin'],
+        'demote': ['dem', 'dismiss','unadmin', 'removeadmin'],
+        'kick': ['remove', 'k','bc', 'nikal','bye'],
+        'add': ['invite', 'a'],
+        'tagall': ['ta', 'everyone', 'all', 'tag'],
+        'group': ['g', 'gc', 'groupmode'],
+        'groupinfo': ['gi', 'ginfo', 'groupdata'],
+        'mute': ['m', 'silent', 'shutup'],
+        'unmute': ['um', 'unsilent', 'speak'],
+        'autoviewstatus': ['avs', 'viewstatus', 'autoview'],
+        'autolikestatus': ['als', 'likestatus', 'autolike'],
+        'antilink': ['al', 'linkprotect', 'nolink'],
+        'antidelete': ['ad', 'antidel', 'deletemsg'],
+        'sticker': ['s', 'st', 'stik'],
+        'toimg': ['ti', 'imagify', 'stickertoimg'],
+        'vv': ['savevv', 'done'],
+        'copy': ['cp', 'clone', 'dup'],
+        'menu': ['help', 'm', 'cmds', 'commands', 'list','listmenu','allmenu'],
+        'ping': ['p', 'speed', 'test'],
+        'uptime': ['up', 'time', 'online'],
+        'runtime': ['rt', 'status', 'stats'],
+        'owner': ['dev', 'creator', 'founder']
+      };
       
-      // Mode Commands
-      'public': ['pub', 'publicmode'],
-      'self': ['selfmode'],
-      
-      // Premium Commands
-      'addprem': ['ap', 'addpremium', 'premadd'],
-      'delprem': ['dp', 'delpremium', 'premdel'],
-      
-      // Ban Commands
-      'ban': ['block','chup', 'banuser'],
-      'unban': ['unblock', 'unbanuser'],
-      
-      // Group Admin Commands
-      'promote': ['p','prom', 'admin', 'makeadmin'],
-      'demote': ['dem', 'dismiss','unadmin', 'removeadmin'],
-      'kick': ['remove', 'k','bc', 'nikal','bye'],
-      'add': ['invite', 'a'],
-      'tagall': ['ta', 'everyone', 'all', 'tag'],
-      'group': ['g', 'gc', 'groupmode'],
-      'groupinfo': ['gi', 'ginfo', 'groupdata'],
-      'mute': ['m', 'silent', 'shutup'],
-      'unmute': ['um', 'unsilent', 'speak'],
-      
-      // Auto Commands
-      'autoviewstatus': ['avs', 'viewstatus', 'autoview'],
-      'autolikestatus': ['als', 'likestatus', 'autolike'],
-      'antilink': ['al', 'linkprotect', 'nolink'],
-      'antidelete': ['ad', 'antidel', 'deletemsg'],
-      
-      // Media Commands
-      'sticker': ['s', 'st', 'stik'],
-      'toimg': ['ti', 'imagify', 'stickertoimg'],
-      'vv': ['savevv', 'done'],  // 🔥 .vv ke aliases: .save aur .done
-      'copy': ['cp', 'clone', 'dup'],
-      
-      // Info Commands
-      'menu': ['help', 'm', 'cmds', 'commands', 'list','listmenu','allmenu'],
-      'ping': ['p', 'speed', 'test'],
-      'uptime': ['up', 'time', 'online'],
-      'runtime': ['rt', 'status', 'stats'],
-      'owner': ['dev', 'creator', 'founder']
-    };
-
-    // Check if command is an alias and map to actual command
-    for (const [mainCmd, aliases] of Object.entries(ALIASES)) {
-      if (aliases.includes(command)) {
-        command = mainCmd;
-        break;
+      for (const [mainCmd, aliases] of Object.entries(ALIASES)) {
+        if (aliases.includes(command)) {
+          command = mainCmd;
+          break;
+        }
       }
     }
 
+    // ─── Permission Checks ───────────────────────────────────────────────────
     const storedOwner = cleanJidNumber(userSettings.ownerNumber || '');
     const isOwner = !!(
       senderNumber === cleanJidNumber(ownerNumber) ||
@@ -337,12 +528,33 @@ async function handleMessage(conn, m, sessionName, ownerNumber) {
 
     if (mode === 'self' && !isOwner) return;
 
+    // ─── Lock Check ──────────────────────────────────────────────────────────
+    const lockedCommands = getSessionSetting(sessionName, 'lockedCommands', []);
+    if (lockedCommands.includes(command) && !isOwner && !isAdmin) {
+      await plainReply(conn, m, `🔒 Command *${prefix}${command}* is locked in this group.`);
+      return;
+    }
+
+    // ─── Command Info Check ──────────────────────────────────────────────────
+    const cmdInfo = COMMANDS_INFO.get(command);
+    if (cmdInfo) {
+      if (cmdInfo.isOwner && !isOwner) return;
+      if (cmdInfo.isAdmin && !isOwner && !isAdmin) {
+        await fReply(conn, m, '❌ Admin only.', sessionName);
+        return;
+      }
+      if (cmdInfo.isPremium && !isOwner && !isUserPremium) {
+        await fReply(conn, m, '❌ Premium only.', sessionName);
+        return;
+      }
+    }
+
+    // ─── Context Object ──────────────────────────────────────────────────────
     const ctx = {
       prefix, sessionName, senderNumber, botNumber,
       isOwner, isUserPremium, isAdmin, args, command,
       senderJid, remoteJid,
-      // Helper functions for command files
-      fReply: (text) => fReply(conn, m, text, sessionName),
+      fReply: (text, mentions = []) => fReply(conn, m, text, sessionName, mentions),
       plainReply: (text) => plainReply(conn, m, text),
       getQuotedMsg: () => getQuotedMsg(m),
       getQuotedCtx: () => getQuotedCtx(m),
@@ -351,6 +563,7 @@ async function handleMessage(conn, m, sessionName, ownerNumber) {
       downloadMedia,
       getMediaType,
       settings,
+      COMMANDS_INFO,
       loadUserSettings: () => loadUserSettings(sessionName),
       saveUserSettings: (data) => saveUserSettings(sessionName, data),
       getSessionSetting: (key, def) => getSessionSetting(sessionName, key, def),
@@ -359,10 +572,40 @@ async function handleMessage(conn, m, sessionName, ownerNumber) {
 
     if (COMMANDS[command]) {
       await COMMANDS[command](conn, m, args, ctx);
+    } else {
+      // Auto-reply check for unknown commands
+      await handleAutoReply(conn, m, sessionName, body);
     }
   } catch (err) {
     process.stdout.write(`[CASE ERROR] ${err.message}\n`);
   }
 }
 
-module.exports = { handleMessage, handleDelete, storeMsg, COMMANDS };
+// ─── Group Participants Update Handler (Welcome/Goodbye + AntiBot) ───────────
+async function handleGroupUpdate(conn, update, sessionName) {
+  try {
+    const { id, participants, action } = update;
+    if (!participants || !action) return;
+    
+    for (const user of participants) {
+      // Welcome/Goodbye
+      await handleWelcomeGoodbye(conn, id, user, action, sessionName);
+      
+      // Anti-Bot (only on add)
+      if (action === 'add') {
+        await handleAntiBot(conn, id, user, sessionName);
+      }
+    }
+  } catch (e) {
+    process.stdout.write(`[GROUP UPDATE ERR] ${e.message}\n`);
+  }
+}
+
+module.exports = { 
+  handleMessage, 
+  handleDelete, 
+  handleGroupUpdate,
+  storeMsg, 
+  COMMANDS, 
+  COMMANDS_INFO 
+};
