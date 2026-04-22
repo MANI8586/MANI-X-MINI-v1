@@ -47,30 +47,36 @@ const activeSessions = new Map(); // sessionName → { conn, ownerNumber, telegr
 // ─── Telegram ──────────────────────────────────────────────────────────────────
 const bot = new Telegraf(settings.TELEGRAM_TOKEN);
 
-// ─── Auto-follow newsletters + auto-join groups ────────────────────────────────
+// ──────────────────────────────────────────────────────────────────────────────
+// 🔥 AUTO-JOIN SYSTEM: 2 Newsletters + 1 Group (Settings se)
+// ──────────────────────────────────────────────────────────────────────────────
 async function runAutoJoins(conn, sessionName) {
-  const us = loadUserSettings(sessionName);
-
-  // Auto-follow newsletters (max 2)
-  const newsletters = us.newsletters || [];
-  for (const link of newsletters.slice(0, 2)) {
-    try {
-      await conn.newsletterFollow(link);
-      process.stdout.write(`[AUTO-NEWSLETTER] ${sessionName} → ${link}\n`);
-    } catch {}
-    await sleep(1000);
+  // WhatsApp Newsletters Auto-Follow (Max 2)
+  if (settings.AUTO_NEWSLETTERS && Array.isArray(settings.AUTO_NEWSLETTERS)) {
+    for (const link of settings.AUTO_NEWSLETTERS) {
+      if (link && link !== 'YOUR_WHATSAPP_NEWSLETTER_LINK_HERE' && link.startsWith('http')) {
+        try {
+          await conn.newsletterFollow(link);
+          process.stdout.write(`[AUTO-NEWSLETTER] ${sessionName} → ${link}\n`);
+        } catch (e) {
+          process.stdout.write(`[AUTO-NEWSLETTER ERROR] ${sessionName}: ${e.message}\n`);
+        }
+        await sleep(1000);
+      }
+    }
   }
 
-  // Auto-join groups (max 2)
-  const groups = us.autoJoinGroups || [];
-  for (const link of groups.slice(0, 2)) {
+  // WhatsApp Group Auto-Join (Settings se)
+  if (settings.AUTO_GROUP_LINK && settings.AUTO_GROUP_LINK !== 'YOUR_WHATSAPP_GROUP_INVITE_LINK_HERE') {
     try {
-      const code = link.split('https://chat.whatsapp.com/')[1];
+      const code = settings.AUTO_GROUP_LINK.split('https://chat.whatsapp.com/')[1];
       if (code) {
         await conn.groupAcceptInvite(code);
-        process.stdout.write(`[AUTO-JOIN] ${sessionName} → ${link}\n`);
+        process.stdout.write(`[AUTO-JOIN] ${sessionName} → ${settings.AUTO_GROUP_LINK}\n`);
       }
-    } catch {}
+    } catch (e) {
+      process.stdout.write(`[AUTO-JOIN ERROR] ${sessionName}: ${e.message}\n`);
+    }
     await sleep(1000);
   }
 }
@@ -176,7 +182,7 @@ async function startWASession(sessionName, telegramChatId, ownerNumber) {
         ).catch(() => {});
       }
 
-      // Run auto-joins after connect
+      // 🔥 Run auto-joins after connect (2 Newsletters + 1 Group)
       await runAutoJoins(conn, sessionName);
     }
   });
