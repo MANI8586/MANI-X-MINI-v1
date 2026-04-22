@@ -104,7 +104,7 @@ function containsLink(text) { return LINK_REGEX.test(text || ''); }
 const bannedUsers = new Set();
 
 // ──────────────────────────────────────────────────────────────────────────────
-// 🔥 NAYA COMMAND LOADER (AUTO-LOAD FROM /commands FOLDER)
+// 🔥 COMMAND LOADER (AUTO-LOAD FROM /commands FOLDER)
 // ──────────────────────────────────────────────────────────────────────────────
 const COMMANDS = {};
 const commandsPath = path.join(__dirname, 'commands');
@@ -255,7 +255,70 @@ async function handleMessage(conn, m, sessionName, ownerNumber) {
 
     const body = msgContent.slice(prefix.length).trim();
     const [commandRaw, ...args] = body.split(' ');
-    const command = commandRaw.toLowerCase();
+    let command = commandRaw.toLowerCase();
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // 🔥 ALIASES SYSTEM
+    // ──────────────────────────────────────────────────────────────────────────
+    const ALIASES = {
+      // Settings Commands
+      'setprefix': ['sp', 'changeprefix', 'prefix'],
+      'setowner': ['so', 'changeowner'],
+      'setbotname': ['sbn', 'changebotname', 'botname'],
+      'setmenuimg': ['smi', 'menuimage', 'changemenuimg'],
+      'setfonts': ['sf', 'changefont', 'fontstyle'],
+      'fonts': ['fontlist', 'listfonts', 'fl'],
+      
+      // Mode Commands
+      'public': ['pub', 'publicmode'],
+      'self': ['selfmode'],
+      
+      // Premium Commands
+      'addprem': ['ap', 'addpremium', 'premadd'],
+      'delprem': ['dp', 'delpremium', 'premdel'],
+      
+      // Ban Commands
+      'ban': ['block','chup', 'banuser'],
+      'unban': ['unblock', 'unbanuser'],
+      
+      // Group Admin Commands
+      'promote': ['p','prom', 'admin', 'makeadmin'],
+      'demote': ['dem', 'dismiss','unadmin', 'removeadmin'],
+      'kick': ['remove', 'k','bc', 'nikal','bye'],
+      'add': ['invite', 'a'],
+      'tagall': ['ta', 'everyone', 'all', 'tag'],
+      'group': ['g', 'gc', 'groupmode'],
+      'groupinfo': ['gi', 'ginfo', 'groupdata'],
+      'mute': ['m', 'silent', 'shutup'],
+      'unmute': ['um', 'unsilent', 'speak'],
+      
+      // Auto Commands
+      'autoviewstatus': ['avs', 'viewstatus', 'autoview'],
+      'autolikestatus': ['als', 'likestatus', 'autolike'],
+      'antilink': ['al', 'linkprotect', 'nolink'],
+      'antidelete': ['ad', 'antidel', 'deletemsg'],
+      
+      // Media Commands
+      'sticker': ['s', 'st', 'stik'],
+      'toimg': ['ti', 'imagify', 'stickertoimg'],
+      'vv': ['savevv', 'done'],  // 🔥 .vv ke aliases: .save aur .done
+      'copy': ['cp', 'clone', 'dup'],
+      
+      // Info Commands
+      'menu': ['help', 'm', 'cmds', 'commands', 'list','listmenu','allmenu'],
+      'ping': ['p', 'speed', 'test'],
+      'uptime': ['up', 'time', 'online'],
+      'runtime': ['rt', 'status', 'stats'],
+      'owner': ['dev', 'creator', 'founder']
+    };
+
+    // Check if command is an alias and map to actual command
+    for (const [mainCmd, aliases] of Object.entries(ALIASES)) {
+      if (aliases.includes(command)) {
+        command = mainCmd;
+        break;
+      }
+    }
 
     const storedOwner = cleanJidNumber(userSettings.ownerNumber || '');
     const isOwner = !!(
